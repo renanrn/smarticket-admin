@@ -35,10 +35,8 @@ def hello_post():
 def page_not_found(error):
     return 'Página não encontrada', 404
 
-
 def upcase(nome):
     return nome.upper()
-
 
 options = {
     'client_id': 'Client_Id_0bac5973bde403a31c9618f3877dfcd3182a28a7',
@@ -58,8 +56,9 @@ def charge(itensJSON):
 
 import dateutil.parser
 
-def pay(charge_id, token, billingAddress, user):
-    """Realiza o pagamento para o ingresso do evento escolhido."""        
+# def pay(charge_id: int, token: str, billingAddr: dict, user: dict):
+def pay(charge_id, token, billingAddr, user):
+    """Realiza o pagamento para INGRESSOS e COMANDAS."""        
     date = user['Birth']
     birthParsed = dateutil.parser.parse(date)
     birthFormated = birthParsed.strftime('%Y-%m-%d')
@@ -68,18 +67,18 @@ def pay(charge_id, token, billingAddress, user):
     params = {'id': charge_id}
 
     body = {
-            'payment': {
-                'credit_card': {
-                    'installments': 1,
-                    'payment_token': token,
-                    'billing_address': {
-                        'street': billingAddress['Street'],
-                        'number': int(billingAddress['Number']),
-                        'neighborhood': billingAddress['Neighborhood'],
-                        'zipcode': billingAddress['Zipcode'],
-                        'city': billingAddress['City'],
-                        'state': billingAddress['State']
-                        },
+        'payment': {
+            'credit_card': {
+                'installments': 1,
+                'payment_token': token,
+                'billing_address': {
+                    'street': billingAddress['Street'],
+                    'number': int(billingAddress['Number']),
+                    'neighborhood': billingAddress['Neighborhood'],
+                    'zipcode': billingAddress['Zipcode'],
+                    'city': billingAddress['City'],
+                    'state': billingAddress['State']
+                    },
                     'customer': {
                         'name': user['Name'],
                         'email': user['Email'],
@@ -87,16 +86,17 @@ def pay(charge_id, token, billingAddress, user):
                         'birth': birthFormated,
                         'phone_number': user['PhoneNumber']
                         }
+                    }
                 }
             }
-        }
+            
     response = gn.pay_charge(params=params, body=body)
     print(response)
     return response
 
 @app.route('/PagarComandaDividida', methods=['POST'])
 def hello_post_pagarcomanda():
-    pToken = request.form['payment_token']
+    token = request.form['payment_token']
     card = json.loads(request.form['card'])
     user = json.loads(request.form['user'])
     billing_addr = json.loads(request.form['billing_address'])
@@ -104,28 +104,15 @@ def hello_post_pagarcomanda():
     cardId = card['Id']
     itensC = card['Itens']
 
-    new_card = firebase_initialize(cardId, eventId, itensC, user)
-    charge_res = chargeNewCard(new_card)
+    new_card = manipula_comanda_dividida(cardId, eventId, itensC, user)
+    charge_res = chargeCardDivided(new_card)
     charge_id = charge_res['data']['charge_id']
 
     # Logo em seguida vem o pay()
     # Lembrar que no pay devemos inativar a comanda também.
-    pay_res = payCardAfterDivide(charge_id, pToken, billing_addr, user)
+    pay_res = payCardAfterDivide(charge_id, token, billing_addr, user)
 
     return jsonify(response=pay_res, status=200)
-
-#####################  Charge da Comanda com itens em lote  #################################
-def chargeComanda(itensC):
-    gn = Gerencianet(options)
-    print(type(itensC))
-    print(itensC)
-    sys.exit(0)
-    body = {
-        'items': [itensC]
-    }
-    response =  gn.create_charge(body=body)
-    print(response)
-    return response
 
 import firebase_admin
 from firebase_admin import credentials, db
@@ -136,30 +123,27 @@ firebase_admin.initialize_app(credential,{
     'databaseURL': 'https://smarticket-b0cb5.firebaseio.com'
 })
 
-def firebase_initialize(cardId,eventId,itensC, userC):
-    """Inicializa o Firebase."""
-
+def manipula_comanda_dividida(cardId,eventId,itensC, userC):
+    """Realiza a manipulação de comandas divididas, fechando a atual e abrindo outras N comandas."""
     ref = db.reference('cards')
     card_ref = ref.child(cardId)
 
     dResult = {item['id']: item['amount'] for item in itensC}
     print(dResult)
 
-    ###### Ajuste em itens para ficar  
-    ###### organizado como no banco de dados.
+    ###### Ajuste em itens para ficar organizado como no banco de dados.
     # dResult = {k: v for i in d2 for k, v in i.items()}
 
-    ######   Trecho para saber por quanto as
-    ######   comandas novas serão divididas:
+    ######   Trecho para saber por quanto as comandas novas serão divididas:
     usersSnapshot = card_ref.child('users').get()    
     divideBy = len(usersSnapshot)
-    print(str(divideBy) + ' usuários:')
+    # print(str(divideBy) + ' usuários:')  # Gustavo
+    print('{:d} usuários'.format(divideBy))
 
     ###### Informações sobre usuários
     users = list(usersSnapshot)
     
-    ###### Iteração para criar novas comandas 
-    ###### para cada usuário contido na comanda anterior.
+    ###### Iteração para criar novas comandas para cada usuário contido na comanda anterior.
     userRef = db.reference('users')
     
     for user in users:
@@ -201,7 +185,7 @@ def firebase_initialize(cardId,eventId,itensC, userC):
     return nova_card
 
 #####################  Charge da Comanda com itens em lote  #################################
-def chargeNewCard(new_card):
+def chargeCardDivided(new_card):
     """Realiza o charge somente para a comanda DIVIDIDA do usuário que solicitou o fechamento."""    
     gn = Gerencianet(options)    
     ref = db.reference('itens')    
@@ -219,15 +203,16 @@ def chargeNewCard(new_card):
         itName = item['name']
         itPrice = item['price']
 
-        itPriceDivided = itPrice / divideBy
-        itPriceDivided = '%.2f'%(itPriceDivided)
-
-        itemPrecoDividido = str(itPriceDivided).replace('.','')
+        itemPrecoDividido = 100 * itPrice // divideBy
+        # itPriceDivided = '%.2f'%(itPriceDivided)
+        # itPriceDivided = '{:.2f}'.format(itPriceDivided)
+        # itemPrecoDividido = str(itPriceDivided).replace('.','')
+        # itemPrecoDividido = int(itPriceDivided * 100)
         dicItem = {
             'name' : itName,
             'value' : int(itemPrecoDividido),
             'amount' : amount
-        }
+            }
         itens.append(dicItem)
 
     print(itens)
@@ -239,39 +224,63 @@ def chargeNewCard(new_card):
     print(response)
     return response
 
-def payCardAfterDivide(charge_id, token, billingAddress, user):
-    """Realiza o pagamento para a comanda DIVIDIDA recém finalizada do usuário que finalizou."""        
-    date = user['Birth']
-    print(date)
-    birthParsed = dateutil.parser.parse(date)
-    birthFormated = birthParsed.strftime('%Y-%m-%d')
+@app.route('/PagarComandaPartiular', methods=['POST'])
+def hello_post_pagarcomanda_particular():
+    token = request.form['payment_token']
+    card = json.loads(request.form['card'])
+    user = json.loads(request.form['user'])
+    billing_addr = json.loads(request.form['billing_address'])
+    eventId = card['Event']
+    cardId = card['Id']
+    itensCard = card['Itens']
+    listItens = obter_itens_comanda(itensCard)
 
-    gn = Gerencianet(options)
-    params = {'id': charge_id}
+    charge_res = chargeCardParticular(new_card)
+    charge_id = charge_res['data']['charge_id']
+    pay_res = payCard(charge_id, token, billing_addr, user)
 
-    body = {
-            'payment': {
-                'credit_card': {
-                    'installments': 1,
-                    'payment_token': token,
-                    'billing_address': {
-                        'street': billingAddress['Street'],
-                        'number': int(billingAddress['Number']),
-                        'neighborhood': billingAddress['Neighborhood'],
-                        'zipcode': billingAddress['Zipcode'],
-                        'city': billingAddress['City'],
-                        'state': billingAddress['State']
-                        },
-                    'customer': {
-                        'name': user['Name'],
-                        'email': user['Email'],
-                        'cpf': user['Cpf'],
-                        'birth': birthFormated,
-                        'phone_number': user['PhoneNumber']
-                        }
-                }
+    disabeCard(cardId)
+
+    return jsonify(response=pay_res, status=200)
+
+# def obter_itens_comanda(itensC: dict):
+def obter_itens_comanda(itensC):
+    """Obtem os itens pelo firebase a partir do nodo de itens dentro da comanda."""  
+    ref = db.reference('itens')
+    itens = []
+    for itKey, amount in itensC.items():
+        refItem = ref.child(itKey)
+        item = refItem.get()
+
+        itName = item['name']
+        itPrice = int(item['price'])
+
+        dicItens = {
+            'name' : itName,
+            'value' : itPrice,
+            'amount' : amount
             }
-        }
-    response = gn.pay_charge(params=params, body=body)
-    print(response)
+        itens.append(dicItens)
+
+    print(itens)
+    return itens
+
+#def chargeCardParticular(itens: list):
+def chargeCardParticular(itens):
+    """Realiza o charge somente para a comanda INDIVIDUAL de cada usuário."""    
+    gn = Gerencianet(options)
+    body = {
+        'items': itens
+    }
+    response =  gn.create_charge(body=body)
+    p(response)
     return response
+
+# def disabeCard(cardId: str):
+def disabeCard(cardId):
+    ref = db.reference('cards')
+    card_ref = ref.child(cardId)
+
+    card_ref.update({
+        'status' : 'inactive'
+    })
